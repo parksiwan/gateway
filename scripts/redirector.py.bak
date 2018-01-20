@@ -1,0 +1,100 @@
+#!/usr/bin/env python
+
+import sys
+import re
+import logging
+import subprocess
+import requests
+import json
+from datetime import datetime
+from socket import *
+import MySQLdb
+
+def redirect_url():
+    db = MySQLdb.connect(host="127.0.0.1", user="root", passwd="psw1101714", db="gateway")
+    cur = db.cursor()
+    
+    request = sys.stdin.readline()
+    found_mac = False;
+    while True:
+        request = sys.stdin.readline()
+        logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '(req)'+ request  + '\n')
+        [ch_id, url, ipaddr, method, user] = request.split()
+        mac = get_mac_address(ipaddr)
+        logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '(mac)'+ mac  + '\n')
+        if mac != '':
+            #found_mac  = authenticate_mac(mac)
+            # The following is to check mac address from table in gateway
+            try:
+                query = "select * from mac_list where mac_address = '%s'" % mac
+                cur.execute(query)
+                if cur.rowcount > 0:
+                    found_mac = True
+                else:
+                    found_mac = False
+            except:
+                pass
+
+        logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '(found_mac)'+ found_mac  + '\n')
+        response  = ch_id + ' OK'
+        if (found_mac is True):    # Later, for this mac set qos profile to normal otherwise shaping
+            response += ' status=200 url='
+            response += url
+            response += '\n'
+            sys.stdout.write(response)
+            sys.stdout.flush()
+            continue
+
+        if 'mywifi' in url:    # takes user to login page for registration or login
+            response += ' status=302 url=https://gateway-parksiwan.c9users.io/index.php?mac='
+            response += mac
+            response += '\n'
+            sys.stdout.write(response)
+            sys.stdout.flush()
+            continue
+
+        #response += ' status=200 url='
+        response += ' status=302 url=https://gateway-parksiwan.c9users.io/'
+        #response += url
+        response += '\n'
+        sys.stdout.write(response)
+        sys.stdout.flush()
+        logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ': (res)' + response + '\n')
+    cur.close()
+    db.close()
+
+def authenticate_mac(mac_address):
+    mac_address = '%27' + mac_address + '%27'
+    response = requests.get("https://gateway-parksiwan.c9users.io/service_mac_list.php?mac=" + mac_address)
+    json_data = json.loads(response.text)
+    # {u'macs': [{u'account_id': 1, u'mac_address': u'08:00:27:b3:68:ff'}]}
+    for x in json_data['macs']:
+        if x['mac_address'] == mac_address:
+            return True
+    return False
+
+
+def get_mac_address(ip):
+    cmd = subprocess.Popen("/usr/sbin/dhcp-lease-list", shell=True, stdout=subprocess.PIPE)
+    while True:
+        line = cmd.stdout.readline()
+        if line != '':
+            results = line.split()
+            if (is_valid_macaddress(results[0]) is True) and (results[1] == ip):
+                return results[0]
+        else:
+            break
+    return ''
+
+def is_valid_macaddress(value):
+    mac_pattern = re.compile(r'[a-fA-F0-9]{2}[:][a-fA-F0-9]{2}[:][a-fA-F0-9]{2}[:][a-fA-F0-9]{2}[:][a-fA-F0-9]{2}[:][a-fA-F0-9]{2}')
+    is_matched = mac_pattern.match(value)
+    if is_matched is None:
+        return False
+    else:
+        return True
+
+if __name__ == '__main__':
+    logging.basicConfig(filename='/var/spool/squid/squid-redirect.log', level=logging.DEBUG)
+    redirect_url()
+
