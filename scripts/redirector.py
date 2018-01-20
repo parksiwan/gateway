@@ -16,9 +16,9 @@ def redirect_url():
     db = MySQLdb.connect(host="127.0.0.1", user="root", passwd="psw1101714", db="gateway")
     cur = db.cursor()
     
-    request = sys.stdin.readline()
     found_mac = 0;
     while True:
+        request = sys.stdin.readline()
         logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '(req)'+ request  + '\n')
         [ch_id, url, ipaddr, method, user] = request.split()
         mac = get_mac_address(ipaddr)
@@ -48,6 +48,7 @@ def redirect_url():
             response += '\n'
             sys.stdout.write(response)
             sys.stdout.flush()
+            logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ': (res)' + response + '\n')
             continue
 
         if 'mywifi' in url:    # takes user to login page for registration or login
@@ -56,6 +57,7 @@ def redirect_url():
             response += '\n'
             sys.stdout.write(response)
             sys.stdout.flush()
+            logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ': (res)' + response + '\n')
             continue
 
         #response += ' status=200 url='
@@ -65,7 +67,6 @@ def redirect_url():
         sys.stdout.write(response)
         sys.stdout.flush()
         logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ': (res)' + response + '\n')
-        request = sys.stdin.readline()
     db.close()
     cur.close()
     
@@ -77,16 +78,22 @@ def authenticate_mac_with_local_db(db, cur, mac_address):
         query = "select * from mac_list where mac_address = '%s'" % mac_address
         cur.execute(query)
         db.commit()
+        logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ': (currowcount)'+ str(cur.rowcount)  + '\n')
         if cur.rowcount > 0:
             # check account_id
-            for row in cur.fetchone():
-                active = row[4]
+            for row in cur.fetchall():
+                active = row[5]
+            logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ': (row[5])'+ str(active)  + '\n')
+
             if active == 0: # after checking with auth server, and confirm
-                found_mac = authenticate_mac_with_auth_server(mac_address)
-                return found_mac
+                #found_mac = authenticate_mac_with_auth_server(mac_address)
+                logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ': (111111)'  + '\n')
+                #return found_mac
             else:
+                logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ': (222222)'  + '\n')
                 # login success and pass (retrieve username from auth server)
-                return 1
+                #return 1
+            return 1
         else:
             logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '*******s\n')
             # insert mac
@@ -102,10 +109,13 @@ def authenticate_mac_with_auth_server(mac_address):
     sending_mac_address = '%27' + mac_address + '%27'
     response = requests.get("https://gateway-parksiwan.c9users.io/service_mac_list.php?mac=" + sending_mac_address)
     json_data = json.loads(response.text)
+    logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '*******s' + response.text + '\n')
     # {u'macs': [{u'account_id': 1, u'mac_address': u'08:00:27:b3:68:ff'}]}
     if json_data['macs'] != None:
         for x in json_data['macs']:
-            if x['mac_address'] == mac_address:
+            logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '&&&&&&&'  + '\n')
+            if x['account_id'] != 0 and str(x['mac_address']) == mac_address:
+                logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '++++++'  + '\n')
                 return 1
     return 0
 
