@@ -1,0 +1,107 @@
+#!/bin/bash
+
+if [ "${1:0:3}" != "eth" ] || [ -z $2 ]; then
+  echo
+  echo "Invalid parameters"
+  echo
+  echo "Syntax: "
+  echo "qos_admin_out dev rate_kbits [status|stop]"
+  echo
+  echo "Example: "
+  echo "qos_admin_out eth1 90"
+  echo
+  exit 1
+fi
+
+DEV=$1
+RATE=$2
+
+if [ "$3" = "status" ]
+then
+  echo
+  echo "STATUS FOR $DEV at $RATE kbit/s"
+  echo
+  echo "[qdisc]"
+  echo
+  tc -s qdisc show dev $DEV
+  echo
+  echo "[class]"
+  echo
+  tc -s class show dev $DEV
+  echo
+  echo "[filter]"
+  echo
+  tc -s filter show dev $DEV
+  echo
+  echo "[iptables]"
+  echo
+  iptables -t mangle -L SHAPEFILTER-OUT -v -x 2> /dev/null
+  echo
+  exit
+fi
+
+# Reset everything to a known state (cleared)
+tc qdisc del dev $DEV root >/dev/null 2>&1
+iptables -t mangle -D POSTROUTING -o $DEV -j SHAPEFILTER-OUT >/dev/null 2>&1
+iptables -t mangle -F SHAPEFILTER-OUT >/dev/null 2>&1
+iptables -t mangle -X SHAPEFILTER-OUT >/dev/null 2>&1
+ip link set dev $DEV qlen 1000
+
+if [ "$3" = "stop" ] 
+then 
+  echo "Shaping removed on $DEV."
+  exit
+fi
+
+###########################################################
+
+ip link set dev $DEV qlen 100
+
+# add HTB root qdisc
+tc qdisc add dev $DEV root handle 1: htb default 25
+
+# add main rate limit classes
+tc class add dev $DEV parent 1: classid 1:1 htb rate 10mbit prio 5 quantum 2000
+tc class add dev $DEV parent 1:1 classid 1:20 htb rate 10mbit prio 5 quantum 2000
+
+tc class add dev $DEV parent 1: classid 1:2 htb rate ${RATE}kbit quantum 100 prio 0
+tc class add dev $DEV parent 1:2 classid 1:21 htb rate $[$RATE/5]kbit ceil ${RATE}kbit prio 0 quantum 80
+tc class add dev $DEV parent 1:2 classid 1:22 htb rate $[$RATE/5]kbit ceil ${RATE}kbit prio 1 quantum 80
+tc class add dev $DEV parent 1:2 classid 1:23 htb rate $[$RATE/5]kbit ceil ${RATE}kbit prio 2 quantum 80
+tc class add dev $DEV parent 1:2 classid 1:24 htb rate $[$RATE/5]kbit ceil ${RATE}kbit prio 3 quantum 80
+tc class add dev $DEV parent 1:2 classid 1:25 htb rate $[$RATE/5]kbit ceil ${RATE}kbit prio 4 quantum 80
+
+tc qdisc add dev $DEV parent 1:20 handle 20: sfq perturb 10
+tc qdisc add dev $DEV parent 1:21 handle 21: sfq perturb 10
+tc qdisc add dev $DEV parent 1:22 handle 22: sfq perturb 10
+tc qdisc add dev $DEV parent 1:23 handle 23: sfq perturb 10
+tc qdisc add dev $DEV parent 1:24 handle 24: sfq perturb 10
+tc qdisc add dev $DEV parent 1:25 handle 25: sfq perturb 10
+
+tc filter add dev $DEV parent 1:0 prio 0 protocol ip handle 25 fw flowid 1:25
+tc filter add dev $DEV parent 1:0 prio 0 protocol ip handle 24 fw flowid 1:24
+tc filter add dev $DEV parent 1:0 prio 0 protocol ip handle 23 fw flowid 1:23
+tc filter add dev $DEV parent 1:0 prio 0 protocol ip handle 22 fw flowid 1:22
+tc filter add dev $DEV parent 1:0 prio 0 protocol ip handle 21 fw flowid 1:21
+tc filter add dev $DEV parent 1:0 prio 0 protocol ip handle 20 fw flowid 1:20
+
+iptables -t mangle -N SHAPEFILTER-OUT
+iptables -t mangle -I POSTROUTING -o $DEV -j SHAPEFILTER-OUT
+
+iptables -t mangle -A SHAPEFILTER-OUT -p tcp --dport microsoft-ds -j MARK --set-mark 20 # MS share
+iptables -t mangle -A SHAPEFILTER-OUT -p tcp --dport netbios-dgm -j MARK --set-mark 20  #
+iptables -t mangle -A SHAPEFILTER-OUT -p tcp --dport netbios-ssn -j MARK --set-mark 20  #
+iptables -t mangle -A SHAPEFILTER-OUT -p tcp --sport http -j MARK --set-mark 20         # Web, inbound conn. on eth1
+iptables -t mangle -A SHAPEFILTER-OUT -p udp --dport domain -j MARK --set-mark 21       # DNS name resolution (small packets)
+iptables -t mangle -A SHAPEFILTER-OUT -p udp --sport domain -j MARK --set-mark 21       # DNS name resolution (small packets)
+iptables -t mangle -A SHAPEFILTER-OUT -p tcp --dport ssh -j MARK --set-mark 22          # secure shell
+iptables -t mangle -A SHAPEFILTER-OUT -p tcp --sport ssh -j MARK --set-mark 22          # secure shell
+iptables -t mangle -A SHAPEFILTER-OUT -p tcp --dport smtp -j MARK --set-mark 24         # outgoing mail
+iptables -t mangle -A SHAPEFILTER-OUT -p tcp --dport ftp-data -j MARK --set-mark 25     # ftp-data port, low prio
+iptables -t mangle -A SHAPEFILTER-OUT -p icmp -j MARK --set-mark 21                     # ICMP
+iptables -t mangle -A SHAPEFILTER-OUT -p tcp --sport 0:1024 -j MARK --set-mark 23       # Default for low port traffic 
+iptables -t mangle -A SHAPEFILTER-OUT -p tcp --dport 0:1024 -j MARK --set-mark 23       #
+iptables -t mangle -A SHAPEFILTER-OUT -p tcp -m length --length :64 -j MARK --set-mark 22 # small packets (probably just ACKs)
+
+echo "Outbound shaping added to $DEV (admin net).  Non-HTTP Rate: ${RATE}Kbit/sec."
+

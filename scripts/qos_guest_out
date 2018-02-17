@@ -1,0 +1,103 @@
+#!/bin/bash
+
+if [ "${1:0:3}" != "eth" ] || [ -z $2 ]; then
+  echo
+  echo "Invalid parameters"
+  echo
+  echo "Syntax: "
+  echo "qos_guest_out dev rate_kbits [status|stop]"
+  echo
+  echo "Example: "
+  echo "qos_guest_out eth0 1000"
+  echo
+  exit 1
+fi
+
+DEV=$1
+RATE=$2
+
+if [ "$3" = "status" ]; then
+  echo
+  echo "STATUS FOR $DEV at $RATE kbit/s"
+  echo
+  echo "[qdisc]"
+  echo
+  tc -s qdisc show dev $DEV
+  echo
+  echo "[class]"
+  echo
+  tc -s class show dev $DEV
+  echo
+  echo "[filter]"
+  echo
+  tc -s filter show dev $DEV
+  echo
+  echo "[iptables]"
+  echo
+  iptables -t mangle -L SHAPEFILTER-IN -v -x 2> /dev/null
+  echo
+  exit
+fi
+
+# Reset everything to a known state (cleared)
+tc qdisc del dev $DEV root >/dev/null 2>&1
+iptables -t mangle -D POSTROUTING -o $DEV -j SHAPEFILTER-IN >/dev/null 2>&1
+iptables -t mangle -F SHAPEFILTER-IN >/dev/null 2>&1
+iptables -t mangle -X SHAPEFILTER-IN >/dev/null 2>&1
+ip link set dev $DEV qlen 1000
+
+if [ "$3" = "stop" ]; then 
+  echo "Shaping removed on $DEV."
+  exit
+fi
+
+###########################################################
+
+# add HTB root qdisc
+tc qdisc add dev $DEV root handle 1: htb default 34
+
+tc class add dev $DEV parent 1: classid 1:1 htb rate 600mbit quantum 50000
+tc class add dev $DEV parent 1:1 classid 1:30 htb rate 450mbit ceil 500mbit prio 4 quantum 40000
+tc class add dev $DEV parent 1:1 classid 1:31 htb rate 50mbit ceil 100mbit prio 5 quantum 2000
+
+tc class add dev $DEV parent 1: classid 1:2 htb rate ${RATE}kbit
+tc class add dev $DEV parent 1:2 classid 1:32 htb rate $[$RATE/3]kbit ceil ${RATE}kbit prio 0
+tc class add dev $DEV parent 1:2 classid 1:33 htb rate $[$RATE/3]kbit ceil ${RATE}kbit prio 1
+tc class add dev $DEV parent 1:2 classid 1:34 htb rate $[$RATE/3]kbit ceil ${RATE}kbit prio 2
+
+#
+# this (35) corresponds to check_limit shaping, do not remove/add unless you are certain!
+#
+tc class add dev $DEV parent 1: classid 1:3 htb rate 500kbit
+tc class add dev $DEV parent 1:3 classid 1:35 htb rate 160kbit ceil 172kbit prio 3 quantum 80
+
+tc filter add dev $DEV parent 1:0 prio 0 protocol ip handle 33 fw flowid 1:33
+tc filter add dev $DEV parent 1:0 prio 0 protocol ip handle 32 fw flowid 1:32
+tc filter add dev $DEV parent 1:0 prio 0 protocol ip handle 31 fw flowid 1:31
+tc filter add dev $DEV parent 1:0 prio 0 protocol ip handle 30 fw flowid 1:30
+
+#
+# this (35) corresponds to check_limit shaping, do not remove/add unless you are certain!
+#
+tc filter add dev $DEV parent 1:0 prio 0 protocol ip handle 35 fw flowid 1:35
+
+
+iptables -t mangle -N SHAPEFILTER-IN
+iptables -t mangle -I POSTROUTING -o $DEV -j SHAPEFILTER-IN
+
+iptables -t mangle -A SHAPEFILTER-IN -p udp --dport 1214 -j MARK --set-mark 30   # I3 Video DPORT highest prio (from VS -> STB)
+iptables -t mangle -A SHAPEFILTER-IN -p udp --dport 7000 -j MARK --set-mark 30   # START Video DPORT highest prio (from VS -> STB)
+iptables -t mangle -A SHAPEFILTER-IN -p udp --dport 1234 -j MARK --set-mark 30   # I3 Multicast Video DPORT highest prio (from VS -> STB)
+iptables -t mangle -A SHAPEFILTER-IN -p tcp --sport 5004 -j MARK --set-mark 30   # VOD RTSP highest prio
+iptables -t mangle -A SHAPEFILTER-IN -p tcp --sport rtsp -j MARK --set-mark 30   # RTSP highest prio
+iptables -t mangle -A SHAPEFILTER-IN -p tcp --sport http -j MARK --set-mark 31   # HTTP has its own special class
+iptables -t mangle -A SHAPEFILTER-IN -p udp --sport domain -j MARK --set-mark 32 # DNS name resolution (small packets)
+iptables -t mangle -A SHAPEFILTER-IN -p tcp --sport ssh -j MARK --set-mark 32    # secure shell
+iptables -t mangle -A SHAPEFILTER-IN -p tcp --sport pop3 -j MARK --set-mark 32   # incoming pop3
+iptables -t mangle -A SHAPEFILTER-IN -p tcp --sport pop3s -j MARK --set-mark 32  # incoming pop3s (ssl)
+iptables -t mangle -A SHAPEFILTER-IN -p tcp --sport imap -j MARK --set-mark 32   # incoming imap
+iptables -t mangle -A SHAPEFILTER-IN -p tcp --sport imaps -j MARK --set-mark 32  # incoming imaps (ssl)
+iptables -t mangle -A SHAPEFILTER-IN -p icmp -j MARK --set-mark 32               # ICMP (ping)
+
+echo "Outbound shaping added to $DEV (guest net).  Non-Video, Non-HTTP Rate: ${RATE}Kbit/sec."
+

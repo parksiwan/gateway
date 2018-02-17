@@ -50,8 +50,8 @@ $IPT -t nat -A PREROUTING -s $INT_NET -p tcp -m tcp --dport 80 -j REDIRECT --to-
 #$IPT -t nat -A PREROUTING -s $INT_NET -p tcp -m tcp --dport 8080 -j REDIRECT --to-ports 3128
 #$IPT -t nat -A PREROUTING -s $INT_NET -p tcp -m tcp --dport 3128 -j REDIRECT --to-ports 3128
 
-$IPT -t nat -A POSTROUTING -s $INT_NET -o eth1 -j SNAT --to-source 192.168.1.16
-#$IPT -t nat -A POSTROUTING -s $INT_NET -o eth1 -j SNAT --to-source 172.16.7.41
+#$IPT -t nat -A POSTROUTING -s $INT_NET -o eth1 -j SNAT --to-source 192.168.1.16
+$IPT -t nat -A POSTROUTING -s $INT_NET -o eth1 -j SNAT --to-source 172.16.6.71
 
 
 

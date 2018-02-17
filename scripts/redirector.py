@@ -1,12 +1,13 @@
 #!/usr/bin/env python
 
-import sys
+import os, sys
 import re
 import logging
 import subprocess
 import requests
 import json
 from datetime import datetime
+from daemonize import daemonize
 import time
 from socket import *
 import MySQLdb
@@ -21,24 +22,17 @@ def redirect_url():
         request = sys.stdin.readline()
         logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '(req)'+ request  + '\n')
         [ch_id, url, ipaddr, method, user] = request.split()
+        logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '(user)'+ user  + '\n')
+
+        #if 'detectportal' in url or 'ocsp' in url:    # takes user to login page for registration or login
+        #    continue
+        
         mac = get_mac_address(ipaddr)
         if mac != ' ':
             # ---> authenticate mac with local db
-            found_mac  = authenticate_mac_with_local_db(db, cur, mac)
+            found_mac  = authenticate_mac_with_local_db(db, cur, mac, ipaddr)
             # ---> authenticate mac with remote auth server
             #found_mac  = authenticate_mac_with_auth_server(mac)
-            # ---> authenticate mac with local db
-            # The following is to check mac address from table in gateway
-            #try:
-            #    query = "select * from mac_list where mac_address = '%s'" % mac
-            #    cur.execute(query)
-            #    db.commit()
-            #    if cur.rowcount > 0:
-            #        found_mac = 1
-            #    else:
-            #        found_mac = 0
-            #except:
-            #    pass
         logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '(found_mac)'+ str(found_mac)  + '\n')
 
         response  = ch_id + ' OK'
@@ -51,7 +45,8 @@ def redirect_url():
             logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + ': (res)' + response + '\n')
             continue
 
-        if 'mywifi' in url:    # takes user to login page for registration or login
+
+        if 'mywifiait' in url:    # takes user to login page for registration or login
             response += ' status=302 url=https://gateway-parksiwan.c9users.io/login.php?mac='
             response += mac
             response += '\n'
@@ -70,7 +65,7 @@ def redirect_url():
     db.close()
     cur.close()
     
-def authenticate_mac_with_local_db(db, cur, mac_address):
+def authenticate_mac_with_local_db(db, cur, mac_address, ip_address):
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
     # ---> authenticate mac with local db
     # The following is to check mac address from table in gateway
@@ -97,13 +92,27 @@ def authenticate_mac_with_local_db(db, cur, mac_address):
         else:
             logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + '*******s\n')
             # insert mac
-            insert_query = "INSERT INTO mac_list (mac_address, account_id, last_internet_access, active) \
-                            VALUES('%s', %d, '%s', %d)" % (mac_address, -1, '0000-00-00 00:00:00', 0)
-            cur.execute(insert_query)
+            insert_mac_query = "INSERT INTO mac_list (mac_address, account_id, last_internet_access, active) \
+                                VALUES('%s', %d, '%s', %d)" % (mac_address, -1, '0000-00-00 00:00:00', 0)
+            insert_ip_query = "INSERT INTO iptables (ip_address,mac_address, account_id, bytes, start_date_time,\
+                               end_date_time,internet_package) VALUES('%s', '%s', %d, %d, '%s', '%s',%d)" % \
+                               (ip_address,mac_address, -1, 5000000000, str(datetime.now().strftime('%Y-%m-%d %H:%M:%S')), '0000-00-00 00:00:00', 1)
+            cur.execute(insert_mac_query)
+            cur.execute(insert_ip_query)
             db.commit()
+            logging.debug(datetime.now().strftime('%Y-%m-%d %H:%M:%S') + 'ip: ' + ip_address + '\n')
+            insert_ip_into_sys_iptables(ip_address)
             return 0
     except:
         pass
+
+
+def insert_ip_into_sys_iptables(ip):
+    ipt_rule_src = 'sudo /sbin/iptables -I FORWARD -s ' + ip  + ' -j ACCEPT'
+    ipt_rule_dsc = 'sudo /sbin/iptables -I FORWARD -d ' + ip  + ' -j ACCEPT'
+    a = subprocess.Popen(ipt_rule_src, shell=True, stdout=subprocess.PIPE)
+    b = subprocess.Popen(ipt_rule_dsc, shell=True, stdout=subprocess.PIPE)
+
 
 def authenticate_mac_with_auth_server(mac_address):
     sending_mac_address = '%27' + mac_address + '%27'
@@ -121,7 +130,7 @@ def authenticate_mac_with_auth_server(mac_address):
 
 
 def get_mac_address(ip):
-    cmd = subprocess.Popen("/usr/sbin/dhcp-lease-list", shell=True, stdout=subprocess.PIPE)
+    cmd = subprocess.Popen("sudo /usr/sbin/dhcp-lease-list", shell=True, stdout=subprocess.PIPE)
     while True:
         line = cmd.stdout.readline()
         if line != '':
@@ -141,6 +150,7 @@ def is_valid_macaddress(value):
         return True
 
 if __name__ == '__main__':
+    #daemonize(stdout='/tmp/stdout.log', stderr='/tmp/stderr.log')
     logging.basicConfig(filename='/var/spool/squid/squid-redirect.log', level=logging.DEBUG)
     redirect_url()
 
